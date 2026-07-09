@@ -11,7 +11,7 @@ from agent import assess
 from schema import Case, RiskReport
 from sanctions_check import check_name
 
-app = FastAPI(title="Xobriq Guard")
+app = FastAPI(title="Off-Guard")
 
 static_dir = Path(__file__).parent / "static"
 
