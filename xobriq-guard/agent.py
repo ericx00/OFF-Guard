@@ -34,6 +34,30 @@ client = AsyncOpenAI(
     timeout=30.0,
 )
 
+# Running total of real token usage across this server's lifetime.
+# Reset when the process restarts — good enough for a hackathon demo,
+# not meant to be durable billing-grade accounting.
+_usage_totals = {
+    "calls": 0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
+}
+
+
+def get_usage() -> dict:
+    """Return a copy of the cumulative token usage counters."""
+    return dict(_usage_totals)
+
+
+def _record_usage(usage) -> None:
+    if usage is None:
+        return
+    _usage_totals["calls"] += 1
+    _usage_totals["prompt_tokens"] += getattr(usage, "prompt_tokens", 0) or 0
+    _usage_totals["completion_tokens"] += getattr(usage, "completion_tokens", 0) or 0
+    _usage_totals["total_tokens"] += getattr(usage, "total_tokens", 0) or 0
+
 SYSTEM_PROMPT = """
 You are Xobriq Guard, an AI KYC compliance screening assistant.
 
@@ -100,11 +124,15 @@ Return a JSON object with keys: rating, suggestion, reasons.
         response = await client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
+                # Gemma's chat template has no 'system' role — fold it into
+                # the user turn instead. This works on both Fireworks and
+                # raw vLLM, so it's safe as the one code path for both.
+                {"role": "user", "content": f"{SYSTEM_PROMPT.strip()}\n\n{user_prompt}"},
             ],
             temperature=0.2,
         )
+
+        _record_usage(getattr(response, "usage", None))
 
         payload = _parse_payload(response.choices[0].message.content)
         if not payload:
@@ -124,5 +152,6 @@ Return a JSON object with keys: rating, suggestion, reasons.
             suggestion=suggestion or "manual review required",
             reasons=[str(reason) for reason in reasons if str(reason).strip()],
         )
-    except (APIStatusError, RateLimitError, TimeoutError, ValueError, Exception):
+    except (APIStatusError, RateLimitError, TimeoutError, ValueError, Exception) as exc:
+        print(f"[agent.assess] LLM call failed: {type(exc).__name__}: {exc}")
         return _safe_default()
