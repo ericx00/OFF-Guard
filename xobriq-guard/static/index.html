@@ -128,7 +128,7 @@
     </style>
 </head>
 <body class="bg-background text-on-background min-h-screen pb-32">
-<!-- TopAppBar (JSON Map: TopAppBar) -->
+<!-- TopAppBar -->
 <header class="fixed top-0 w-full z-50 bg-surface/60 dark:bg-surface-container-highest/60 backdrop-blur-md border-b border-outline-variant/30 flex justify-between items-center px-6 py-4">
 <div class="flex items-center gap-2 active:scale-95 transition-transform duration-200 cursor-pointer">
 <span class="material-symbols-outlined text-primary" data-icon="security">security</span>
@@ -147,7 +147,25 @@
 <h2 class="font-headline-lg text-primary">Screening Agent 01</h2>
 <p class="text-body-md text-on-surface-variant leading-relaxed">The agent processes submitted documentation and cross-references metadata context to return a risk rating, a suggestion, and its reasons. It never approves or rejects anyone &mdash; a human always makes the final call.</p>
 </section>
-<!-- Signal Sources Section -->
+
+<!-- Upload Section -->
+<section class="space-y-6">
+    <h3 class="font-label-md text-primary uppercase tracking-widest text-xs border-b border-outline-variant/30 pb-2">Upload Document</h3>
+    <div class="glass-card border border-outline-variant/50 rounded-xl p-6 space-y-4">
+        <div class="flex flex-col gap-3">
+            <label class="font-label-md text-xs text-on-surface-variant">Choose a file (PDF, image, or text)</label>
+            <input type="file" id="file-input" accept=".pdf,.png,.jpg,.jpeg,.bmp,.tiff,.txt,.md" class="block w-full text-sm text-on-surface-variant file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary file:text-on-primary hover:file:bg-primary/90">
+            <textarea id="upload-context" placeholder="Optional context for this document..." class="w-full bg-surface-container-lowest border border-outline-variant/50 focus:ring-1 focus:ring-primary focus:border-primary rounded-lg p-3 text-sm resize-none" rows="2"></textarea>
+            <button onclick="uploadAndScreen()" class="bg-primary text-on-primary py-3 rounded-lg font-headline-md text-sm flex items-center justify-center gap-2 hover:bg-primary/90 active:opacity-80 transition-all">
+                <span class="material-symbols-outlined text-[18px]" data-icon="upload">upload</span>
+                UPLOAD & SCREEN
+            </button>
+        </div>
+        <div id="upload-status" class="hidden font-body-md text-xs text-on-surface-variant p-3 bg-surface-container-low rounded-lg"></div>
+    </div>
+</section>
+
+<!-- Signal Sources -->
 <section class="space-y-6">
 <div class="flex justify-between items-end border-b border-outline-variant/30 pb-2">
 <h3 class="font-label-md text-primary uppercase tracking-widest text-xs">Signal Sources</h3>
@@ -196,6 +214,7 @@
 </div>
 </div>
 <p class="font-label-md text-[10px] text-on-surface-variant/70 uppercase tracking-tighter">Voice / Video / Device / Behavioral are illustrative placeholders for modules not yet built. Simulating them fills the Contextual Metadata field below.</p>
+
 <!-- Sanctions Check Card -->
 <div class="bg-surface-container-low border border-outline-variant/30 p-6 rounded-xl space-y-4">
 <div class="flex items-center gap-2">
@@ -211,6 +230,7 @@
 <div class="hidden font-body-md text-xs p-4 bg-surface-container rounded-lg border border-outline-variant/20" id="sanctions-result"></div>
 </div>
 </section>
+
 <!-- The Case Section -->
 <section class="space-y-6">
 <h3 class="font-label-md text-primary uppercase tracking-widest text-xs border-b border-outline-variant/30 pb-2">The Case</h3>
@@ -220,7 +240,19 @@
 <label class="font-label-md text-[10px] text-on-surface-variant uppercase tracking-widest">Document Raw Text</label>
 <textarea class="w-full bg-surface-container-lowest border border-outline-variant/50 focus:ring-1 focus:ring-primary focus:border-primary rounded-lg p-3 font-mono text-[13px] leading-relaxed resize-none" id="doc-input" placeholder="Paste document text here..." rows="4"></textarea>
 </div>
-<div class="space-y-2">
+<div class="flex gap-2">
+    <button onclick="startVoiceInput()" class="bg-secondary-container text-secondary px-4 py-2 rounded-lg font-label-md text-xs flex items-center gap-2 hover:bg-secondary-container/70">
+        <span class="material-symbols-outlined text-[18px]">mic</span>
+        VOICE INPUT
+    </button>
+    <button onclick="captureFace()" class="bg-secondary-container text-secondary px-4 py-2 rounded-lg font-label-md text-xs flex items-center gap-2 hover:bg-secondary-container/70">
+        <span class="material-symbols-outlined text-[18px]">face</span>
+        CAPTURE FACE
+    </button>
+    <span id="voice-status" class="text-[10px] text-on-surface-variant italic hidden">Listening...</span>
+</div>
+<div id="face-result" class="mt-1 text-xs text-on-surface-variant hidden"></div>
+<div class="space-y-2 mt-2">
 <label class="font-label-md text-[10px] text-on-surface-variant uppercase tracking-widest">Contextual Metadata</label>
 <textarea class="w-full bg-surface-container-lowest border border-outline-variant/50 focus:ring-1 focus:ring-primary focus:border-primary rounded-lg p-3 font-mono text-[13px] leading-relaxed resize-none" id="context-input" placeholder="e.g. sanctions check, watchlist status, or run the signals above" rows="2"></textarea>
 </div>
@@ -267,7 +299,7 @@
 </div>
 </footer>
 </main>
-<!-- BottomNavBar (JSON Map: BottomNavBar) -->
+<!-- BottomNavBar -->
 <nav class="fixed bottom-0 left-0 w-full z-50 flex justify-around items-center bg-surface/90 backdrop-blur-md pb-8 pt-4 border-t border-outline-variant/30">
 <div class="flex flex-col items-center justify-center text-primary active:translate-y-[-2px] transition-transform">
 <span class="material-symbols-outlined text-[28px]" data-icon="dashboard">dashboard</span>
@@ -440,7 +472,13 @@
                 return;
             }
 
-            const stampClass = "risk-stamp-" + data.rating; // low | medium | high
+            displayReport(data);
+        }
+
+        // ---- Helper to display report ----
+        function displayReport(report) {
+            const canvas = document.getElementById('result-canvas');
+            const stampClass = "risk-stamp-" + report.rating;
 
             canvas.innerHTML = `
                 <div class="w-full text-left space-y-6">
@@ -450,16 +488,16 @@
                             <span class="font-headline-md text-xl text-primary">Screening Report</span>
                         </div>
                         <div class="px-4 py-2 text-xs font-bold font-mono border rounded-lg ${stampClass}">
-                            ${data.rating.toUpperCase()} RISK
+                            ${report.rating.toUpperCase()} RISK
                         </div>
                     </div>
                     <p class="font-body-md text-sm text-on-surface-variant border-l-2 border-primary/20 pl-4 py-1 leading-relaxed">
-                        <strong>Suggestion:</strong> ${data.suggestion}
+                        <strong>Suggestion:</strong> ${report.suggestion}
                     </p>
                     <div class="space-y-2">
                         <span class="font-label-md text-[10px] text-primary uppercase tracking-widest">Reasons:</span>
                         <ul class="font-mono text-[11px] space-y-2 text-on-surface-variant">
-                            ${data.reasons.map(r => `<li class="flex items-center gap-3"><span class="text-primary/40">&#9679;</span> ${r}</li>`).join('')}
+                            ${report.reasons.map(r => `<li class="flex items-center gap-3"><span class="text-primary/40">&#9679;</span> ${r}</li>`).join('')}
                         </ul>
                     </div>
                 </div>
@@ -468,6 +506,143 @@
             canvas.classList.add('p-6', 'bg-surface-container-lowest');
         }
 
+        // ---- Upload & Screen ----
+        async function uploadAndScreen() {
+            const fileInput = document.getElementById('file-input');
+            const context = document.getElementById('upload-context').value.trim();
+            const statusDiv = document.getElementById('upload-status');
+
+            if (!fileInput.files.length) {
+                alert("Please select a file first.");
+                return;
+            }
+
+            const file = fileInput.files[0];
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('context', context);
+
+            statusDiv.classList.remove('hidden');
+            statusDiv.innerHTML = `<span class="shimmer">Uploading and extracting text...</span>`;
+
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Upload failed');
+                }
+
+                const report = data.report;
+                const hash = data.file_hash;
+                const filename = data.filename;
+
+                displayReport(report);
+
+                let mrzInfo = '';
+                if (data.mrz && data.mrz.valid) {
+                    mrzInfo = `<div class="mt-0.5 text-[10px] text-secondary">MRZ: ${data.mrz.passport_number} (valid)</div>`;
+                } else if (data.mrz && data.mrz.reason) {
+                    mrzInfo = `<div class="mt-0.5 text-[10px] text-error">MRZ: ${data.mrz.reason}</div>`;
+                }
+
+                statusDiv.innerHTML = `
+                    <div class="flex items-center gap-2 text-primary">
+                        <span class="material-symbols-outlined text-sm">verified</span>
+                        <span>File uploaded: ${filename}</span>
+                    </div>
+                    <div class="mt-1 text-[10px] text-on-surface-variant/70 font-mono">SHA-256: ${hash.slice(0, 16)}...</div>
+                    <div class="mt-0.5 text-[10px] text-on-surface-variant/50">Extracted ${data.extracted_text_length} characters</div>
+                    ${mrzInfo}
+                `;
+
+                fileInput.value = '';
+
+            } catch (err) {
+                statusDiv.innerHTML = `<span class="text-error">Error: ${err.message}</span>`;
+            }
+        }
+
+        // ---- Voice Input ----
+        function startVoiceInput() {
+            const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+            recognition.lang = 'en-US';
+            recognition.interimResults = false;
+            recognition.maxAlternatives = 1;
+
+            const status = document.getElementById('voice-status');
+            status.classList.remove('hidden');
+            status.textContent = '🎤 Listening... Speak now.';
+
+            recognition.onresult = function(event) {
+                const transcript = event.results[0][0].transcript;
+                const docField = document.getElementById('doc-input');
+                docField.value += transcript + '\n';
+                status.textContent = '✅ Voice input captured!';
+                setTimeout(() => status.classList.add('hidden'), 2000);
+            };
+
+            recognition.onerror = function(event) {
+                status.textContent = '❌ Error: ' + event.error;
+                setTimeout(() => status.classList.add('hidden'), 3000);
+            };
+
+            recognition.start();
+        }
+
+        // ---- Face Capture ----
+        async function captureFace() {
+            const video = document.createElement('video');
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            const resultDiv = document.getElementById('face-result');
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                video.srcObject = stream;
+                await video.play();
+
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                ctx.drawImage(video, 0, 0);
+                stream.getTracks().forEach(track => track.stop());
+
+                canvas.toBlob(async (blob) => {
+                    const formData = new FormData();
+                    formData.append('file', blob, 'face.jpg');
+
+                    resultDiv.classList.remove('hidden');
+                    resultDiv.innerHTML = '🔍 Checking face...';
+
+                    try {
+                        const response = await fetch('/detect-face', {
+                            method: 'POST',
+                            body: formData
+                        });
+                        const data = await response.json();
+                        if (data.faces_detected > 0) {
+                            resultDiv.innerHTML = `✅ Face detected (${data.faces_detected} faces). Confidence: ${data.confidence}`;
+                            const ctxField = document.getElementById('context-input');
+                            ctxField.value += `\n- Face detected: ${data.faces_detected} faces.`;
+                        } else {
+                            resultDiv.innerHTML = '❌ No face detected – possible photo or not a live person.';
+                            const ctxField = document.getElementById('context-input');
+                            ctxField.value += '\n- No face detected in submitted image.';
+                        }
+                    } catch (err) {
+                        resultDiv.innerHTML = `⚠️ Error: ${err.message}`;
+                    }
+                }, 'image/jpeg');
+            } catch (err) {
+                resultDiv.classList.remove('hidden');
+                resultDiv.innerHTML = `❌ Camera access denied: ${err.message}`;
+            }
+        }
+
+        // ---- Attack demo ----
         function loadAttack() {
             document.getElementById('doc-input').value =
 `Reference letter for John Doe.
