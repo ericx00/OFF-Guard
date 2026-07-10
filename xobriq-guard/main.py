@@ -2,6 +2,7 @@ import hashlib
 import io
 import os
 import re
+import datetime
 from pathlib import Path
 
 import cv2
@@ -11,10 +12,15 @@ import pdfplumber
 from PyPDF2 import PdfReader
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
+from newsapi import NewsApiClient
+import pandas as pd
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import inch
 
 from agent import assess
 from schema import Case, RiskReport
@@ -33,6 +39,10 @@ app.add_middleware(
 )
 
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+# Initialize NewsAPI
+NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "")
+newsapi = NewsApiClient(api_key=NEWSAPI_KEY) if NEWSAPI_KEY else None
 
 
 @app.on_event("startup")
@@ -79,7 +89,7 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-# ---------- NEW: Face detection ----------
+# ---------- Face detection ----------
 @app.post("/detect-face")
 async def detect_face(file: UploadFile = File(...)):
     contents = await file.read()
@@ -99,16 +109,11 @@ async def detect_face(file: UploadFile = File(...)):
     }
 
 
-# ---------- NEW: MRZ validation helper ----------
+# ---------- MRZ validation ----------
 def validate_mrz(text: str) -> dict:
-    """
-    Basic MRZ (Machine Readable Zone) validation for passports.
-    Returns dict with 'valid' and details if found.
-    """
     lines = [line.strip() for line in text.split('\n') if line.strip()]
     mrz_lines = []
     for line in lines:
-        # Passport MRZ: two lines, each 44 characters (or 36 for some IDs)
         if re.match(r'^[A-Z0-9<]{44}$', line) or re.match(r'^[A-Z0-9<]{36}$', line):
             mrz_lines.append(line)
     if len(mrz_lines) < 2:
@@ -116,7 +121,6 @@ def validate_mrz(text: str) -> dict:
     mrz1, mrz2 = mrz_lines[0], mrz_lines[1]
     if mrz1[0] != 'P':
         return {"valid": False, "reason": "Not a passport MRZ (should start with P)"}
-    # Basic extraction
     return {
         "valid": True,
         "type": mrz1[0:2],
@@ -131,7 +135,7 @@ def validate_mrz(text: str) -> dict:
     }
 
 
-# ---------- NEW: Document upload with OCR and MRZ ----------
+# ---------- Document upload with OCR ----------
 def extract_text_from_file(content: bytes, filename: str) -> str:
     ext = filename.split('.')[-1].lower()
     text = ""
@@ -174,7 +178,6 @@ async def upload_document(
     file: UploadFile = File(...),
     context: str = Form("")
 ):
-    # Security: file size
     MAX_SIZE = 10 * 1024 * 1024
     file.file.seek(0, 2)
     size = file.file.tell()
@@ -182,7 +185,6 @@ async def upload_document(
     if size > MAX_SIZE:
         raise HTTPException(400, f"File too large: max {MAX_SIZE//1024//1024}MB")
 
-    # Allowed extensions
     allowed_extensions = {"pdf", "png", "jpg", "jpeg", "bmp", "tiff", "txt", "md"}
     ext = file.filename.split('.')[-1].lower()
     if ext not in allowed_extensions:
@@ -199,7 +201,6 @@ async def upload_document(
     if not document_text:
         raise HTTPException(400, "No text could be extracted from the document.")
 
-    # MRZ validation
     mrz_info = validate_mrz(document_text)
     enriched_context = context
     if mrz_info.get("valid"):
@@ -207,7 +208,6 @@ async def upload_document(
     elif mrz_info.get("reason"):
         enriched_context += f"\nMRZ validation failed: {mrz_info['reason']}"
 
-    # Run the agent
     case = Case(document=document_text, context=enriched_context)
     report = await assess(case)
 
@@ -218,3 +218,144 @@ async def upload_document(
         "extracted_text_length": len(document_text),
         "mrz": mrz_info,
     }
+
+
+# ---------- NEW: Adverse Media Search ----------
+@app.get("/adverse-media")
+async def get_adverse_media(name: str):
+    if not newsapi:
+        return {"name": name, "hits": [], "error": "NewsAPI key not configured"}
+    try:
+        articles = newsapi.get_everything(
+            q=name,
+            language='en',
+            sort_by='relevancy',
+            page_size=5
+        )
+        results = []
+        for a in articles.get('articles', []):
+            if a.get('title') and a.get('url'):
+                results.append({
+                    'title': a['title'][:200],
+                    'source': a.get('source', {}).get('name', 'Unknown'),
+                    'url': a['url'],
+                    'published': a.get('publishedAt', '')
+                })
+        return {"name": name, "hits": results}
+    except Exception as e:
+        return {"name": name, "hits": [], "error": str(e)}
+
+
+# ---------- NEW: Batch Screening (CSV) ----------
+@app.post("/batch-screen")
+async def batch_screen(file: UploadFile = File(...)):
+    try:
+        content = await file.read()
+        df = pd.read_csv(io.BytesIO(content))
+    except Exception as e:
+        raise HTTPException(400, f"Invalid CSV: {str(e)}")
+
+    if 'document' not in df.columns:
+        raise HTTPException(400, "CSV must have a 'document' column")
+
+    results = []
+    for idx, row in df.iterrows():
+        doc = str(row['document'])
+        ctx = str(row.get('context', ''))
+        try:
+            case = Case(document=doc, context=ctx)
+            report = await assess(case)
+            results.append({
+                'row': idx + 1,
+                'document_preview': doc[:100] + ('...' if len(doc) > 100 else ''),
+                'rating': report.rating,
+                'suggestion': report.suggestion,
+                'reasons': '; '.join(report.reasons[:3]),
+            })
+        except Exception as e:
+            results.append({
+                'row': idx + 1,
+                'document_preview': doc[:100] + ('...' if len(doc) > 100 else ''),
+                'rating': 'ERROR',
+                'suggestion': str(e),
+                'reasons': '',
+            })
+
+    output = io.StringIO()
+    pd.DataFrame(results).to_csv(output, index=False)
+    return Response(
+        output.getvalue(),
+        media_type='text/csv',
+        headers={'Content-Disposition': 'attachment; filename=batch_results.csv'}
+    )
+
+
+# ---------- NEW: PDF Report ----------
+@app.post("/generate-pdf")
+async def generate_pdf(payload: dict):
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    y = height - 50
+
+    # Header
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(50, y, "OFF Guard – Screening Report")
+    y -= 30
+
+    c.setFont("Helvetica", 10)
+    c.drawString(50, y, f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    y -= 20
+
+    # Rating
+    report = payload.get('report', {})
+    rating = report.get('rating', 'N/A').upper()
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(50, y, f"Risk Rating: {rating}")
+    y -= 25
+
+    # Suggestion
+    c.setFont("Helvetica", 11)
+    c.drawString(50, y, f"Suggestion: {report.get('suggestion', 'N/A')}")
+    y -= 20
+
+    # Reasons
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(50, y, "Reasons:")
+    y -= 18
+    c.setFont("Helvetica", 10)
+    for r in report.get('reasons', []):
+        c.drawString(60, y, f"• {r}")
+        y -= 16
+        if y < 50:
+            c.showPage()
+            y = height - 50
+
+    # File hash
+    file_hash = payload.get('file_hash', 'N/A')
+    if file_hash and file_hash != 'N/A':
+        c.drawString(50, y - 10, f"SHA-256 Hash: {file_hash}")
+        y -= 20
+
+    # MRZ info
+    mrz = payload.get('mrz', {})
+    if mrz.get('valid'):
+        c.drawString(50, y - 10, f"MRZ: Passport {mrz.get('passport_number', 'N/A')} (valid)")
+        y -= 20
+
+    # Adverse media
+    adverse = payload.get('adverse_hits', [])
+    if adverse:
+        c.drawString(50, y - 10, f"Adverse Media Hits: {len(adverse)}")
+        y -= 16
+        for a in adverse[:3]:
+            c.drawString(60, y - 10, f"• {a.get('title', '')[:80]}")
+            y -= 14
+
+    c.save()
+    buffer.seek(0)
+    return Response(
+        buffer.getvalue(),
+        media_type='application/pdf',
+        headers={'Content-Disposition': 'attachment; filename=off_guard_report.pdf'}
+    )
