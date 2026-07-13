@@ -125,6 +125,9 @@
         h1, h2, h3, h4 {
             font-family: 'Playfair Display', serif;
         }
+        .gauge-circle {
+            transition: stroke-dashoffset 0.8s ease;
+        }
     </style>
 </head>
 <body class="bg-background text-on-background min-h-screen pb-32">
@@ -229,6 +232,32 @@
 </div>
 <div class="hidden font-body-md text-xs p-4 bg-surface-container rounded-lg border border-outline-variant/20" id="sanctions-result"></div>
 </div>
+
+<!-- Adverse Media Card -->
+<div class="bg-surface-container-low border border-outline-variant/30 p-6 rounded-xl space-y-4">
+    <div class="flex items-center gap-2">
+        <span class="material-symbols-outlined text-primary text-xl">newspaper</span>
+        <span class="font-label-md text-xs text-on-surface uppercase tracking-widest">Adverse Media Search</span>
+    </div>
+    <div class="flex gap-2">
+        <input class="flex-1 bg-surface-container-lowest border border-outline-variant/50 focus:ring-1 focus:ring-primary focus:border-primary rounded-lg px-4 py-3 text-sm" id="adverse-input" placeholder="Enter name to check news..."/>
+        <button class="bg-primary text-on-primary px-6 rounded-lg font-label-md text-xs active:scale-95" onclick="runAdverseMedia()">SEARCH</button>
+    </div>
+    <div id="adverse-results" class="hidden text-xs space-y-1"></div>
+</div>
+
+<!-- Batch Screening -->
+<div class="bg-surface-container-low border border-outline-variant/30 p-6 rounded-xl space-y-4">
+    <div class="flex items-center gap-2">
+        <span class="material-symbols-outlined text-primary text-xl">upload_file</span>
+        <span class="font-label-md text-xs text-on-surface uppercase tracking-widest">Batch Screen (CSV)</span>
+    </div>
+    <div class="flex flex-col gap-2">
+        <input type="file" id="batch-file" accept=".csv" class="text-sm"/>
+        <button onclick="batchScreen()" class="bg-primary text-on-primary py-2 px-6 rounded-lg font-label-md text-xs active:scale-95 self-start">SCREEN ALL</button>
+    </div>
+    <div id="batch-results" class="hidden text-xs text-on-surface-variant"></div>
+</div>
 </section>
 
 <!-- The Case Section -->
@@ -240,7 +269,7 @@
 <label class="font-label-md text-[10px] text-on-surface-variant uppercase tracking-widest">Document Raw Text</label>
 <textarea class="w-full bg-surface-container-lowest border border-outline-variant/50 focus:ring-1 focus:ring-primary focus:border-primary rounded-lg p-3 font-mono text-[13px] leading-relaxed resize-none" id="doc-input" placeholder="Paste document text here..." rows="4"></textarea>
 </div>
-<div class="flex gap-2">
+<div class="flex gap-2 flex-wrap">
     <button onclick="startVoiceInput()" class="bg-secondary-container text-secondary px-4 py-2 rounded-lg font-label-md text-xs flex items-center gap-2 hover:bg-secondary-container/70">
         <span class="material-symbols-outlined text-[18px]">mic</span>
         VOICE INPUT
@@ -268,14 +297,31 @@
 </div>
 </div>
 </section>
+
 <!-- Result Section -->
 <section class="space-y-6 pb-12">
 <h3 class="font-label-md text-primary uppercase tracking-widest text-xs border-b border-outline-variant/30 pb-2">Verdict &amp; Analysis</h3>
-<div class="min-h-[180px] bg-surface-container-low border border-outline-variant/30 border-dashed rounded-xl flex flex-col items-center justify-center p-8 text-center" id="result-canvas">
+<div class="min-h-[200px] bg-surface-container-low border border-outline-variant/30 border-dashed rounded-xl flex flex-col items-center justify-center p-8 text-center" id="result-canvas">
 <span class="material-symbols-outlined text-outline-variant/50 text-[56px] mb-4" data-icon="analytics">analytics</span>
 <p class="text-on-surface-variant font-body-md italic text-sm">Awaiting screening signals...</p>
 </div>
+<!-- Trust Score Gauge -->
+<div id="trust-score-container" class="hidden mt-4 flex flex-col items-center">
+    <span class="font-label-md text-[10px] text-on-surface-variant uppercase tracking-widest">Trust Score</span>
+    <div class="relative w-32 h-32">
+        <svg class="w-full h-full transform -rotate-90" viewBox="0 0 120 120">
+            <circle cx="60" cy="60" r="50" fill="none" stroke="#e5e7eb" stroke-width="8"/>
+            <circle id="trust-gauge" cx="60" cy="60" r="50" fill="none" stroke="#1b3022" stroke-width="8"
+                stroke-dasharray="314.16" stroke-dashoffset="314.16"
+                stroke-linecap="round" class="gauge-circle"/>
+        </svg>
+        <div class="absolute inset-0 flex items-center justify-center">
+            <span id="trust-score-text" class="font-headline-lg text-2xl text-primary">0</span>
+        </div>
+    </div>
+</div>
 </section>
+
 <!-- Footer -->
 <footer class="w-full bg-surface-container-low border-t border-outline-variant/30">
 <div class="flex flex-col items-center px-6 py-12 max-w-7xl mx-auto space-y-10">
@@ -299,6 +345,7 @@
 </div>
 </footer>
 </main>
+
 <!-- BottomNavBar -->
 <nav class="fixed bottom-0 left-0 w-full z-50 flex justify-around items-center bg-surface/90 backdrop-blur-md pb-8 pt-4 border-t border-outline-variant/30">
 <div class="flex flex-col items-center justify-center text-primary active:translate-y-[-2px] transition-transform">
@@ -318,8 +365,15 @@
 <span class="font-label-md text-[10px] uppercase mt-1">Settings</span>
 </div>
 </nav>
+
 <script>
-        // ---- Mock upstream signals (illustrative only) ----
+        // ---- Global state ----
+        let currentReport = null;
+        let currentFileHash = null;
+        let currentMRZ = null;
+        let currentAdverseHits = [];
+
+        // ---- Mock upstream signals ----
         const SIGNAL_DEFS = {
             voice:    { label: "Voice biometric check",
                         clear: p => [`${p}% MATCH`, `${p}% match confidence, no cloning artifacts detected`],
@@ -335,9 +389,7 @@
                         flag:  p => [`ANOMALY`, `Deviation from prior behavioral baseline (${p}%)`] },
         };
 
-        function rand(min, max) {
-            return Math.floor(Math.random() * (max - min + 1)) + min;
-        }
+        function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 
         let pipelineSummaryLines = [];
         let sanctionsSummaryLine = null;
@@ -359,45 +411,36 @@
         function runPipeline() {
             const grid = document.getElementById('signal-grid');
             grid.classList.add('opacity-40');
-
             const summaryLines = [];
-
             setTimeout(() => {
                 Object.entries(SIGNAL_DEFS).forEach(([key, def]) => {
                     const flagged = Math.random() < 0.2;
                     const pct = flagged ? rand(55, 79) : rand(88, 99);
                     const [badgeText, statusText] = flagged ? def.flag(pct) : def.clear(pct);
-
                     const card = grid.querySelector(`[data-signal="${key}"]`);
                     const badge = card.querySelector('[data-badge]');
                     const sub = card.querySelector('[data-sub]');
-
                     badge.textContent = badgeText;
                     badge.className = flagged
                         ? "bg-error/10 text-error font-label-md text-[9px] px-2 py-0.5 rounded-full"
                         : "bg-primary/10 text-primary font-label-md text-[9px] px-2 py-0.5 rounded-full";
                     sub.textContent = statusText;
-
                     summaryLines.push(`${def.label}: ${statusText}.`);
                 });
-
                 grid.classList.remove('opacity-40');
                 pipelineSummaryLines = summaryLines;
                 rebuildContext();
             }, 500);
         }
 
-        // ---- Real sanctions check (live OFAC SDN data) ----
+        // ---- Sanctions check ----
         async function runSanctionsCheck() {
             const nameInput = document.getElementById('sanctions-input');
             const name = nameInput.value.trim();
             const resultDiv = document.getElementById('sanctions-result');
-
             if (!name) return;
-
             resultDiv.classList.remove('hidden');
             resultDiv.innerHTML = `<div class="shimmer h-4 w-full mb-2 rounded"></div><div class="shimmer h-4 w-3/4 rounded"></div>`;
-
             let response, data;
             try {
                 response = await fetch('/sanctions-check', {
@@ -411,7 +454,6 @@
                 resultDiv.innerHTML = `<span class="text-error text-xs">Error: ${err.message}</span>`;
                 return;
             }
-
             if (data.flagged) {
                 const top = data.matches[0];
                 resultDiv.innerHTML = `
@@ -436,50 +478,199 @@
             rebuildContext();
         }
 
-        // ---- Real screening (live call to the agent) ----
-        async function runScreening() {
-            const doc = document.getElementById('doc-input').value.trim();
-            const ctx = document.getElementById('context-input').value.trim();
-            const canvas = document.getElementById('result-canvas');
-
-            if (!doc) {
-                alert("Please input document data first.");
-                return;
-            }
-
-            canvas.innerHTML = `
-                <div class="flex flex-col items-center gap-6">
-                    <div class="w-12 h-12 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
-                    <p class="font-label-md text-xs uppercase tracking-widest animate-pulse text-primary">Analyzing with the Xobriq agent...</p>
-                </div>
-            `;
-
-            let response, data;
+        // ---- Adverse Media ----
+        async function runAdverseMedia() {
+            const name = document.getElementById('adverse-input').value.trim();
+            if (!name) return;
+            const resultsDiv = document.getElementById('adverse-results');
+            resultsDiv.classList.remove('hidden');
+            resultsDiv.innerHTML = '🔍 Searching news...';
             try {
-                response = await fetch('/screen', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ document: doc, context: ctx }),
-                });
-                data = await response.json();
-            } catch (err) {
-                canvas.innerHTML = `<p class="text-error text-sm">Error: could not reach the agent (${err.message})</p>`;
-                return;
+                const resp = await fetch(`/adverse-media?name=${encodeURIComponent(name)}`);
+                const data = await resp.json();
+                if (data.error) {
+                    resultsDiv.innerHTML = `⚠️ ${data.error}`;
+                    return;
+                }
+                if (data.hits.length === 0) {
+                    resultsDiv.innerHTML = '✅ No adverse media found.';
+                    currentAdverseHits = [];
+                } else {
+                    let html = `<div class="font-bold text-primary text-[10px] uppercase tracking-wider">${data.hits.length} article(s) found</div>`;
+                    data.hits.forEach(a => {
+                        html += `<div class="py-1 border-b border-outline-variant/20"><a href="${a.url}" target="_blank" class="text-primary underline">${a.title}</a> <span class="text-[9px] text-on-surface-variant/60">- ${a.source}</span></div>`;
+                    });
+                    resultsDiv.innerHTML = html;
+                    currentAdverseHits = data.hits;
+                    // Add to context
+                    const ctxField = document.getElementById('context-input');
+                    ctxField.value += `\n- Adverse media hits: ${data.hits.length} article(s).`;
+                }
+            } catch (e) {
+                resultsDiv.innerHTML = '❌ Error: ' + e.message;
             }
-
-            if (!response.ok) {
-                canvas.innerHTML = `<p class="text-error text-sm">Error: ${data.detail || JSON.stringify(data)}</p>`;
-                return;
-            }
-
-            displayReport(data);
         }
 
-        // ---- Helper to display report ----
+        // ---- Batch Screening ----
+        async function batchScreen() {
+            const fileInput = document.getElementById('batch-file');
+            if (!fileInput.files.length) return;
+            const file = fileInput.files[0];
+            const formData = new FormData();
+            formData.append('file', file);
+            const resultsDiv = document.getElementById('batch-results');
+            resultsDiv.classList.remove('hidden');
+            resultsDiv.innerHTML = '⏳ Processing batch...';
+            try {
+                const resp = await fetch('/batch-screen', { method: 'POST', body: formData });
+                if (!resp.ok) throw new Error('Batch failed');
+                const blob = await resp.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'batch_results.csv';
+                a.click();
+                window.URL.revokeObjectURL(url);
+                resultsDiv.innerHTML = '✅ Batch complete. CSV downloaded.';
+            } catch (e) {
+                resultsDiv.innerHTML = '❌ Error: ' + e.message;
+            }
+        }
+
+        // ---- Voice Input ----
+        function startVoiceInput() {
+            const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+            recognition.lang = 'en-US';
+            recognition.interimResults = false;
+            recognition.maxAlternatives = 1;
+            const status = document.getElementById('voice-status');
+            status.classList.remove('hidden');
+            status.textContent = '🎤 Listening... Speak now.';
+            recognition.onresult = function(event) {
+                const transcript = event.results[0][0].transcript;
+                const docField = document.getElementById('doc-input');
+                docField.value += transcript + '\n';
+                status.textContent = '✅ Voice input captured!';
+                setTimeout(() => status.classList.add('hidden'), 2000);
+            };
+            recognition.onerror = function(event) {
+                status.textContent = '❌ Error: ' + event.error;
+                setTimeout(() => status.classList.add('hidden'), 3000);
+            };
+            recognition.start();
+        }
+
+        // ---- Face Capture ----
+        async function captureFace() {
+            const video = document.createElement('video');
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            const resultDiv = document.getElementById('face-result');
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                video.srcObject = stream;
+                await video.play();
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                ctx.drawImage(video, 0, 0);
+                stream.getTracks().forEach(track => track.stop());
+                canvas.toBlob(async (blob) => {
+                    const formData = new FormData();
+                    formData.append('file', blob, 'face.jpg');
+                    resultDiv.classList.remove('hidden');
+                    resultDiv.innerHTML = '🔍 Checking face...';
+                    try {
+                        const response = await fetch('/detect-face', { method: 'POST', body: formData });
+                        const data = await response.json();
+                        if (data.faces_detected > 0) {
+                            resultDiv.innerHTML = `✅ Face detected (${data.faces_detected} faces). Confidence: ${data.confidence}`;
+                            const ctxField = document.getElementById('context-input');
+                            ctxField.value += `\n- Face detected: ${data.faces_detected} faces.`;
+                        } else {
+                            resultDiv.innerHTML = '❌ No face detected – possible photo or not a live person.';
+                            const ctxField = document.getElementById('context-input');
+                            ctxField.value += '\n- No face detected in submitted image.';
+                        }
+                    } catch (err) {
+                        resultDiv.innerHTML = `⚠️ Error: ${err.message}`;
+                    }
+                }, 'image/jpeg');
+            } catch (err) {
+                resultDiv.classList.remove('hidden');
+                resultDiv.innerHTML = `❌ Camera access denied: ${err.message}`;
+            }
+        }
+
+        // ---- Upload & Screen ----
+        async function uploadAndScreen() {
+            const fileInput = document.getElementById('file-input');
+            const context = document.getElementById('upload-context').value.trim();
+            const statusDiv = document.getElementById('upload-status');
+            if (!fileInput.files.length) { alert("Please select a file first."); return; }
+            const file = fileInput.files[0];
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('context', context);
+            statusDiv.classList.remove('hidden');
+            statusDiv.innerHTML = `<span class="shimmer">Uploading and extracting text...</span>`;
+            try {
+                const response = await fetch('/upload', { method: 'POST', body: formData });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || 'Upload failed');
+                const report = data.report;
+                currentFileHash = data.file_hash;
+                currentMRZ = data.mrz;
+                displayReport(report);
+                let mrzInfo = '';
+                if (data.mrz && data.mrz.valid) {
+                    mrzInfo = `<div class="mt-0.5 text-[10px] text-secondary">MRZ: ${data.mrz.passport_number} (valid)</div>`;
+                } else if (data.mrz && data.mrz.reason) {
+                    mrzInfo = `<div class="mt-0.5 text-[10px] text-error">MRZ: ${data.mrz.reason}</div>`;
+                }
+                statusDiv.innerHTML = `
+                    <div class="flex items-center gap-2 text-primary">
+                        <span class="material-symbols-outlined text-sm">verified</span>
+                        <span>File uploaded: ${data.filename}</span>
+                    </div>
+                    <div class="mt-1 text-[10px] text-on-surface-variant/70 font-mono">SHA-256: ${data.file_hash.slice(0, 16)}...</div>
+                    <div class="mt-0.5 text-[10px] text-on-surface-variant/50">Extracted ${data.extracted_text_length} characters</div>
+                    ${mrzInfo}
+                `;
+                fileInput.value = '';
+            } catch (err) {
+                statusDiv.innerHTML = `<span class="text-error">Error: ${err.message}</span>`;
+            }
+        }
+
+        // ---- Compute Trust Score ----
+        function computeTrustScore(report) {
+            let score = 70; // base
+            // Rating
+            if (report.rating === 'low') score += 20;
+            else if (report.rating === 'medium') score += 0;
+            else if (report.rating === 'high') score -= 20;
+            // MRZ
+            if (currentMRZ && currentMRZ.valid) score += 10;
+            // Face detection (from context)
+            const ctx = document.getElementById('context-input').value;
+            if (ctx.includes('Face detected')) score += 5;
+            if (ctx.includes('No face detected')) score -= 10;
+            // Sanctions
+            if (ctx.includes('POTENTIAL HIT')) score -= 25;
+            if (ctx.includes('no match found')) score += 5;
+            // Adverse media
+            if (currentAdverseHits.length > 0) score -= 10 * Math.min(currentAdverseHits.length, 3);
+            // Clamp
+            return Math.max(0, Math.min(100, score));
+        }
+
+        // ---- Display Report ----
         function displayReport(report) {
+            currentReport = report;
             const canvas = document.getElementById('result-canvas');
             const stampClass = "risk-stamp-" + report.rating;
-
+            // Compute trust score
+            const trustScore = computeTrustScore(report);
             canvas.innerHTML = `
                 <div class="w-full text-left space-y-6">
                     <div class="flex justify-between items-start">
@@ -500,146 +691,184 @@
                             ${report.reasons.map(r => `<li class="flex items-center gap-3"><span class="text-primary/40">&#9679;</span> ${r}</li>`).join('')}
                         </ul>
                     </div>
+                    <div class="flex flex-wrap gap-2 mt-2">
+                        <button onclick="downloadPDF()" class="bg-secondary-container text-secondary px-6 py-2 rounded-lg font-label-md text-xs flex items-center gap-2 hover:bg-secondary-container/70 transition-colors">
+                            <span class="material-symbols-outlined text-[16px]">picture_as_pdf</span>
+                            DOWNLOAD PDF REPORT
+                        </button>
+                        <button onclick="generateInsights()" class="bg-primary text-on-primary px-6 py-2 rounded-lg font-label-md text-xs flex items-center gap-2 hover:bg-primary/90 transition-colors">
+                            <span class="material-symbols-outlined text-[16px]">lightbulb</span>
+                            GENERATE AI INSIGHTS
+                        </button>
+                    </div>
+                    <div id="insights-container" class="mt-4 hidden space-y-4 text-left">
+                        <div class="bg-surface-container-low p-4 rounded-lg border border-outline-variant/30">
+                            <span class="font-label-md text-[10px] text-primary uppercase tracking-widest">Document Summary</span>
+                            <p id="insight-summary" class="text-sm mt-1 text-on-surface-variant"></p>
+                        </div>
+                        <div class="bg-surface-container-low p-4 rounded-lg border border-outline-variant/30">
+                            <span class="font-label-md text-[10px] text-primary uppercase tracking-widest">Risk Narrative</span>
+                            <p id="insight-narrative" class="text-sm mt-1 text-on-surface-variant"></p>
+                        </div>
+                        <div class="bg-surface-container-low p-4 rounded-lg border border-outline-variant/30">
+                            <span class="font-label-md text-[10px] text-primary uppercase tracking-widest">Interview Questions</span>
+                            <ul id="insight-questions" class="list-disc list-inside text-sm mt-1 text-on-surface-variant space-y-1"></ul>
+                        </div>
+                    </div>
                 </div>
             `;
             canvas.classList.remove('items-center', 'justify-center', 'text-center', 'border-dashed');
             canvas.classList.add('p-6', 'bg-surface-container-lowest');
+            // Update trust score gauge
+            updateTrustGauge(trustScore);
         }
 
-        // ---- Upload & Screen ----
-        async function uploadAndScreen() {
-            const fileInput = document.getElementById('file-input');
-            const context = document.getElementById('upload-context').value.trim();
-            const statusDiv = document.getElementById('upload-status');
+        // ---- Trust Score Gauge ----
+        function updateTrustGauge(score) {
+            const container = document.getElementById('trust-score-container');
+            container.classList.remove('hidden');
+            const circle = document.getElementById('trust-gauge');
+            const text = document.getElementById('trust-score-text');
+            const circumference = 314.16;
+            const offset = circumference - (score / 100) * circumference;
+            circle.style.strokeDashoffset = offset;
+            // Color based on score
+            if (score >= 70) circle.style.stroke = '#1b3022';
+            else if (score >= 40) circle.style.stroke = '#735c00';
+            else circle.style.stroke = '#ba1a1a';
+            text.textContent = score;
+        }
 
-            if (!fileInput.files.length) {
-                alert("Please select a file first.");
+        // ---- Download PDF ----
+        async function downloadPDF() {
+            if (!currentReport) { alert('No report to download. Run a screening first.'); return; }
+            const payload = {
+                report: currentReport,
+                file_hash: currentFileHash || 'N/A',
+                mrz: currentMRZ || {},
+                adverse_hits: currentAdverseHits || []
+            };
+            try {
+                const resp = await fetch('/generate-pdf', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const blob = await resp.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `off_guard_report_${new Date().toISOString().slice(0,10)}.pdf`;
+                a.click();
+                window.URL.revokeObjectURL(url);
+            } catch (e) {
+                alert('PDF download failed: ' + e.message);
+            }
+        }
+
+        // ---- AI Insights ----
+        async function generateInsights() {
+            const doc = document.getElementById('doc-input').value.trim();
+            const ctx = document.getElementById('context-input').value.trim();
+            if (!currentReport) {
+                alert("Please run a screening first.");
                 return;
             }
-
-            const file = fileInput.files[0];
-            const formData = new FormData();
-            formData.append('file', file);
-            formData.append('context', context);
-
-            statusDiv.classList.remove('hidden');
-            statusDiv.innerHTML = `<span class="shimmer">Uploading and extracting text...</span>`;
+            const container = document.getElementById('insights-container');
+            container.classList.remove('hidden');
+            // Show loading shimmer
+            container.innerHTML = `
+                <div class="bg-surface-container-low p-4 rounded-lg border border-outline-variant/30">
+                    <span class="font-label-md text-[10px] text-primary uppercase tracking-widest">Document Summary</span>
+                    <div class="shimmer h-4 w-3/4 mt-1 rounded"></div>
+                </div>
+                <div class="bg-surface-container-low p-4 rounded-lg border border-outline-variant/30">
+                    <span class="font-label-md text-[10px] text-primary uppercase tracking-widest">Risk Narrative</span>
+                    <div class="shimmer h-4 w-3/4 mt-1 rounded"></div>
+                </div>
+                <div class="bg-surface-container-low p-4 rounded-lg border border-outline-variant/30">
+                    <span class="font-label-md text-[10px] text-primary uppercase tracking-widest">Interview Questions</span>
+                    <div class="shimmer h-4 w-3/4 mt-1 rounded"></div>
+                    <div class="shimmer h-4 w-2/3 mt-1 rounded"></div>
+                </div>
+            `;
 
             try {
-                const response = await fetch('/upload', {
+                // 1. Summary
+                const sumResp = await fetch('/generate-summary', {
                     method: 'POST',
-                    body: formData
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ document: doc })
                 });
-                const data = await response.json();
+                const sumData = await sumResp.json();
 
-                if (!response.ok) {
-                    throw new Error(data.detail || 'Upload failed');
-                }
+                // 2. Narrative
+                const narrResp = await fetch('/generate-narrative', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ document: doc, context: ctx, report: currentReport })
+                });
+                const narrData = await narrResp.json();
 
-                const report = data.report;
-                const hash = data.file_hash;
-                const filename = data.filename;
+                // 3. Questions
+                const qResp = await fetch('/generate-questions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ document: doc, context: ctx, report: currentReport })
+                });
+                const qData = await qResp.json();
 
-                displayReport(report);
-
-                let mrzInfo = '';
-                if (data.mrz && data.mrz.valid) {
-                    mrzInfo = `<div class="mt-0.5 text-[10px] text-secondary">MRZ: ${data.mrz.passport_number} (valid)</div>`;
-                } else if (data.mrz && data.mrz.reason) {
-                    mrzInfo = `<div class="mt-0.5 text-[10px] text-error">MRZ: ${data.mrz.reason}</div>`;
-                }
-
-                statusDiv.innerHTML = `
-                    <div class="flex items-center gap-2 text-primary">
-                        <span class="material-symbols-outlined text-sm">verified</span>
-                        <span>File uploaded: ${filename}</span>
+                // Populate
+                container.innerHTML = `
+                    <div class="bg-surface-container-low p-4 rounded-lg border border-outline-variant/30">
+                        <span class="font-label-md text-[10px] text-primary uppercase tracking-widest">Document Summary</span>
+                        <p class="text-sm mt-1 text-on-surface-variant">${sumData.summary || 'N/A'}</p>
                     </div>
-                    <div class="mt-1 text-[10px] text-on-surface-variant/70 font-mono">SHA-256: ${hash.slice(0, 16)}...</div>
-                    <div class="mt-0.5 text-[10px] text-on-surface-variant/50">Extracted ${data.extracted_text_length} characters</div>
-                    ${mrzInfo}
+                    <div class="bg-surface-container-low p-4 rounded-lg border border-outline-variant/30">
+                        <span class="font-label-md text-[10px] text-primary uppercase tracking-widest">Risk Narrative</span>
+                        <p class="text-sm mt-1 text-on-surface-variant">${narrData.narrative || 'N/A'}</p>
+                    </div>
+                    <div class="bg-surface-container-low p-4 rounded-lg border border-outline-variant/30">
+                        <span class="font-label-md text-[10px] text-primary uppercase tracking-widest">Interview Questions</span>
+                        <ul class="list-disc list-inside text-sm mt-1 text-on-surface-variant space-y-1">
+                            ${(qData.questions || []).map(q => `<li>${q}</li>`).join('')}
+                        </ul>
+                    </div>
                 `;
-
-                fileInput.value = '';
-
             } catch (err) {
-                statusDiv.innerHTML = `<span class="text-error">Error: ${err.message}</span>`;
+                container.innerHTML = `<p class="text-error text-sm">Error generating insights: ${err.message}</p>`;
             }
         }
 
-        // ---- Voice Input ----
-        function startVoiceInput() {
-            const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
-            recognition.lang = 'en-US';
-            recognition.interimResults = false;
-            recognition.maxAlternatives = 1;
-
-            const status = document.getElementById('voice-status');
-            status.classList.remove('hidden');
-            status.textContent = '🎤 Listening... Speak now.';
-
-            recognition.onresult = function(event) {
-                const transcript = event.results[0][0].transcript;
-                const docField = document.getElementById('doc-input');
-                docField.value += transcript + '\n';
-                status.textContent = '✅ Voice input captured!';
-                setTimeout(() => status.classList.add('hidden'), 2000);
-            };
-
-            recognition.onerror = function(event) {
-                status.textContent = '❌ Error: ' + event.error;
-                setTimeout(() => status.classList.add('hidden'), 3000);
-            };
-
-            recognition.start();
-        }
-
-        // ---- Face Capture ----
-        async function captureFace() {
-            const video = document.createElement('video');
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            const resultDiv = document.getElementById('face-result');
-
+        // ---- Run Screening (from doc/context) ----
+        async function runScreening() {
+            const doc = document.getElementById('doc-input').value.trim();
+            const ctx = document.getElementById('context-input').value.trim();
+            const canvas = document.getElementById('result-canvas');
+            if (!doc) { alert("Please input document data first."); return; }
+            canvas.innerHTML = `
+                <div class="flex flex-col items-center gap-6">
+                    <div class="w-12 h-12 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+                    <p class="font-label-md text-xs uppercase tracking-widest animate-pulse text-primary">Analyzing with the Xobriq agent...</p>
+                </div>
+            `;
+            let response, data;
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-                video.srcObject = stream;
-                await video.play();
-
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
-                ctx.drawImage(video, 0, 0);
-                stream.getTracks().forEach(track => track.stop());
-
-                canvas.toBlob(async (blob) => {
-                    const formData = new FormData();
-                    formData.append('file', blob, 'face.jpg');
-
-                    resultDiv.classList.remove('hidden');
-                    resultDiv.innerHTML = '🔍 Checking face...';
-
-                    try {
-                        const response = await fetch('/detect-face', {
-                            method: 'POST',
-                            body: formData
-                        });
-                        const data = await response.json();
-                        if (data.faces_detected > 0) {
-                            resultDiv.innerHTML = `✅ Face detected (${data.faces_detected} faces). Confidence: ${data.confidence}`;
-                            const ctxField = document.getElementById('context-input');
-                            ctxField.value += `\n- Face detected: ${data.faces_detected} faces.`;
-                        } else {
-                            resultDiv.innerHTML = '❌ No face detected – possible photo or not a live person.';
-                            const ctxField = document.getElementById('context-input');
-                            ctxField.value += '\n- No face detected in submitted image.';
-                        }
-                    } catch (err) {
-                        resultDiv.innerHTML = `⚠️ Error: ${err.message}`;
-                    }
-                }, 'image/jpeg');
+                response = await fetch('/screen', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ document: doc, context: ctx }),
+                });
+                data = await response.json();
             } catch (err) {
-                resultDiv.classList.remove('hidden');
-                resultDiv.innerHTML = `❌ Camera access denied: ${err.message}`;
+                canvas.innerHTML = `<p class="text-error text-sm">Error: could not reach the agent (${err.message})</p>`;
+                return;
             }
+            if (!response.ok) {
+                canvas.innerHTML = `<p class="text-error text-sm">Error: ${data.detail || JSON.stringify(data)}</p>`;
+                return;
+            }
+            displayReport(data);
         }
 
         // ---- Attack demo ----
